@@ -1,27 +1,21 @@
-from flax import nnx
+from flax import linen as nn
+import jax.numpy as jnp
 
-class MLP(nnx.Module):
+class MLP(nn.Module):
     '''
-    MLP for MNIST dataset.
+    MLP for MNIST dataset using Flax's linen API.
 
     Assumptions
         - Input is a flattened 28x28 image.
         - Output is a 10-dimensional vector.
     '''
+    hidden_dim: int
+    depth: int = 3
 
-    def __init__(self, 
-                 hidden_dim: int, 
-                 seed: int = 42):
-        self.linear1 = nnx.Linear(in_features=28 * 28, out_features=hidden_dim, rngs=nnx.Rngs(seed))
-        self.linear2 = nnx.Linear(in_features=hidden_dim, out_features=hidden_dim, rngs=nnx.Rngs(seed))
-        self.linear3 = nnx.Linear(in_features=hidden_dim, out_features=10, rngs=nnx.Rngs(seed))
-
+    @nn.compact
     def __call__(self, x):
-        x = self.linear1(x)
-        x = nnx.relu(x)
-        x = self.linear2(x)
-        x = nnx.relu(x)
-        x = self.linear3(x)
-        # Remove softmax - let the loss function handle it
-
+        for i in range(self.depth - 1):
+            x = nn.Dense(self.hidden_dim)(x)
+            x = nn.relu(x)
+        x = nn.Dense(10)(x)
         return x

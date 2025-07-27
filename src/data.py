@@ -44,6 +44,15 @@ class Dataset:
 
         return X_train, y_train, X_test, y_test
 
+    @staticmethod
+    def load_FashionMNIST():
+        transform = transforms.Compose([
+            transforms.ToTensor(),  # converts to (1, 28, 28) tensor with float32 in [0,1]
+        ])
+        dataset = lambda **kwargs: datasets.FashionMNIST(**kwargs)
+        X_train, y_train, X_test, y_test = Dataset._datasetToJax(dataset, transform)
+        return X_train, y_train, X_test, y_test
+
 
 
 class DataLoader:

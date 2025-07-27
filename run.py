@@ -1,54 +1,54 @@
 import os
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
+# os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
 import optax
+from tqdm import tqdm
 
 from src.data import Dataset, DataLoader
 from src.model import MLP
 from src.train import Trainer
 
-
-
-
 if __name__ == "__main__":
     seed = 42
    
     # Load Data
-    batch_size = 128
-    X_train, y_train, X_test, y_test = Dataset.load_MNIST()
+    batch_size = 100
+    X_train, y_train, X_test, y_test = Dataset.load_FashionMNIST()
     dataloader_train = DataLoader(X_train, y_train, batch_size=batch_size, shuffle=True, seed=seed)
     dataloader_test = DataLoader(X_test, y_test, batch_size=batch_size, shuffle=False)
 
-    # Define model
-    hidden_dim = 100
-    model = MLP(hidden_dim=hidden_dim, seed=seed)
+    # Define model (using JIT-compatible version)
+    hidden_dim = 2**9
+    depth = 6
+    model = MLP(hidden_dim=hidden_dim, depth=depth)
 
     # Optimizer
     lr = 1e-3
-    optimizer = nnx.Optimizer(model, optax.adam(lr), wrt=nnx.Param)
+    optimizer = optax.adam(lr)
 
-    # Metrics
-    metrics = nnx.MultiMetric(
-        accuracy=nnx.metrics.Accuracy(),
-        loss=nnx.metrics.Average('loss'),
+    # Loss
+    def loss_fn(logits, batch_y):
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, batch_y).mean()
+        accuracy = jnp.mean(jnp.argmax(logits, axis=-1) == batch_y)
+        return loss, accuracy
+
+    # Initialize trainer
+    trainer = Trainer(
+        model=model,
+        dataloader=dataloader_train,
+        optimizer=optimizer,
+        loss=loss_fn  # Loss is defined inside the trainer
     )
 
-    # Loss function
-    def loss_fn(model: nnx.Module, batch):
-        logits = model(batch['image'])
-        loss = optax.softmax_cross_entropy(logits, batch['label']).mean()
-
-        return loss, logits
-
-    # Trainer
+    # Train the model with validation
+    print("Starting Training...")
     epochs = 5
-    trainer = Trainer(model, dataloader_train, optimizer, metrics, loss_fn)
-    trainer._train_step(dataloader_train[0], dataloader_train[1])
-
-
-
-
-
+    trainer.train(epochs=epochs, eval_dataloader=dataloader_test)
+    
+    # Final evaluation on test set
+    print("\nFinal evaluation on test set...")
+    test_loss, test_acc = trainer.evaluate(dataloader_test)
+    print(f"Final test loss: {test_loss:.4f}")
+    print(f"Final test accuracy: {test_acc:.4f}") 
