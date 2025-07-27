@@ -5,6 +5,7 @@ import optax
 from tqdm import tqdm
 from typing import Callable, Tuple
 import time
+import wandb
 
 from .data import DataLoader
 
@@ -20,7 +21,10 @@ class Trainer:
                  loss_teacher: Callable,
                  loss_student: Callable,
                  use_pmap: bool = False,
-                 seed: int = 42):
+                 seed: int = 42,
+                 wandb_project: str = "flax-knowledge-distillation",
+                 wandb_name: str = None,
+                 log_wandb: bool = True):
         self.teacher = teacher
         self.student = student
         self.dataloader_train = dataloader_train
@@ -31,6 +35,19 @@ class Trainer:
         self.loss_student = loss_student
         self.use_pmap = use_pmap
         self.seed = seed
+        self.log_wandb = log_wandb
+
+        # Initialize wandb if logging is enabled
+        if self.log_wandb:
+            wandb.init(
+                project=wandb_project,
+                name=wandb_name,
+                config={
+                    "seed": seed,
+                    "use_pmap": use_pmap,
+                    "device_count": jax.device_count(),
+                }
+            )
 
         # Initialize model parameters
         self.params_teacher = None
@@ -88,10 +105,25 @@ class Trainer:
             avg_train_acc = jnp.mean(jnp.array(train_accuracies))
             print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Train Acc: {avg_train_acc:.4f} (Time: {epoch_time:.2f}s)")
             
+            # Log to wandb
+            log_dict = {
+                "epoch": epoch + 1,
+                "teacher/train_loss": float(avg_train_loss),
+                "teacher/train_acc": float(avg_train_acc),
+                "teacher/epoch_time": epoch_time,
+            }
+            
             # Evaluate on validation set if provided
             if self.dataloader_test is not None:
                 val_loss, val_acc = self.evaluate_teacher(self.dataloader_test)
                 print(f"Epoch {epoch+1}/{epochs} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+                log_dict.update({
+                    "teacher/val_loss": float(val_loss),
+                    "teacher/val_acc": float(val_acc),
+                })
+            
+            if self.log_wandb:
+                wandb.log(log_dict)
 
     def train_student(self, epochs: int):
         '''
@@ -120,11 +152,26 @@ class Trainer:
             avg_train_acc = jnp.mean(jnp.array(train_accuracies))
             print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Train Acc: {avg_train_acc:.4f} (Time: {epoch_time:.2f}s)")
             
+            # Log to wandb
+            log_dict = {
+                "epoch": epoch + 1,
+                "student/train_loss": float(avg_train_loss),
+                "student/train_acc": float(avg_train_acc),
+                "student/epoch_time": epoch_time,
+            }
+            
             # Evaluate on validation set if provided
             if self.dataloader_test is not None:
                 val_loss, val_acc = self.evaluate_student(self.dataloader_test)
                 print(f"Epoch {epoch+1}/{epochs} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-   
+                log_dict.update({
+                    "student/val_loss": float(val_loss),
+                    "student/val_acc": float(val_acc),
+                })
+            
+            if self.log_wandb:
+                wandb.log(log_dict)
+
     def _train_step_teacher(self, params, opt_state, batch_x, batch_y):
         """Jitted training step."""
         def loss_fn(params, batch_x, batch_y):
@@ -194,3 +241,27 @@ class Trainer:
             accuracies.append(accuracy)
         
         return jnp.mean(jnp.array(losses)), jnp.mean(jnp.array(accuracies))
+
+    def finish(self):
+        """Finish the wandb run."""
+        if self.log_wandb:
+            wandb.finish()
+
+    def get_final_metrics(self):
+        """Get final evaluation metrics for both teacher and student."""
+        if self.dataloader_test is not None:
+            teacher_val_loss, teacher_val_acc = self.evaluate_teacher(self.dataloader_test)
+            student_val_loss, student_val_acc = self.evaluate_student(self.dataloader_test)
+            
+            final_metrics = {
+                "teacher/final_val_loss": float(teacher_val_loss),
+                "teacher/final_val_acc": float(teacher_val_acc),
+                "student/final_val_loss": float(student_val_loss),
+                "student/final_val_acc": float(student_val_acc),
+            }
+            
+            if self.log_wandb:
+                wandb.log(final_metrics)
+            
+            return final_metrics
+        return None

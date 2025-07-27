@@ -18,6 +18,7 @@ class MLP(nn.Module):
         x = nn.relu(x)
         x = nn.Dense(256)(x)
         x = nn.relu(x)
+        # self.intermediate = x  # Removed - causes Flax error
         x = nn.Dense(10 + self.auxiliary)(x)
 
         # Return raw logits, not softmax outputs

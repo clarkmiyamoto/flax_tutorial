@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from flax import nnx, linen
 import optax
 from tqdm import tqdm
+import argparse
 
 from src.data import Dataset, DataLoader
 from src.model import MLP
@@ -19,11 +20,22 @@ def init_models(architecture: linen.Module, rngs: jax.random.PRNGKey):
 
     return student, teacher
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--batch_size", type=int, default=200)
+    parser.add_argument("--wandb_project", type=str, default="flax-knowledge-distillation")
+    parser.add_argument("--wandb_name", type=str, default=None)
+    parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging")
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    seed = 42
+    args = parse_args()
+    seed = args.seed
    
     # Load Data
-    batch_size = 100  # Reduced from 200 for better distillation
+    batch_size = args.batch_size  # Reduced from 200 for better distillation
     X_train, y_train, X_test, y_test = Dataset.load_MNIST()
     dataloader_train = DataLoader(X_train, y_train, batch_size=batch_size, shuffle=True, seed=seed)
     dataloader_test = DataLoader(X_test, y_test, batch_size=batch_size, shuffle=False)
@@ -36,16 +48,16 @@ if __name__ == "__main__":
     lr_student = 1e-4  # Much higher learning rate for student
     
     # Create learning rate scheduler for student
-    lr_schedule = optax.cosine_decay_schedule(
-        init_value=lr_student,
-        decay_steps=100 * 300,  # 100 epochs * ~300 batches per epoch
-        alpha=0.1  # Final LR will be 10% of initial
-    )
+    # lr_student = optax.cosine_decay_schedule(
+    #     init_value=lr_student,
+    #     decay_steps=100 * 300,  # 100 epochs * ~300 batches per epoch
+    #     alpha=0.1  # Final LR will be 10% of initial
+    # )
     
     optimizer_teacher = optax.adam(lr_teacher)
     optimizer_student = optax.chain(
         # optax.clip_by_global_norm(1.0),  # Gradient clipping
-        optax.adam(lr_schedule)
+        optax.adamw(lr_student, weight_decay=args.weight_decay)
     )
 
     # Loss
@@ -77,7 +89,7 @@ if __name__ == "__main__":
 
     # Train teacher - even more epochs for better teacher
     epoch_teacher = 5  # Increased from 15
-    epoch_student = 100
+    epoch_student = 1000
 
     trainer = Trainer(
         teacher=teacher,
@@ -87,8 +99,25 @@ if __name__ == "__main__":
         optimizer_teacher=optimizer_teacher,
         optimizer_student=optimizer_student,
         loss_teacher=loss_teacher,
-        loss_student=loss_student  # Loss is defined inside the trainer
+        loss_student=loss_student,  # Loss is defined inside the trainer
+        seed=seed,
+        wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        log_wandb=not args.no_wandb
     )
+    
+    # Log hyperparameters to wandb
+    if not args.no_wandb:
+        import wandb
+        wandb.config.update({
+            "lr_teacher": lr_teacher,
+            "lr_student": lr_student,
+            "weight_decay": args.weight_decay,
+            "batch_size": batch_size,
+            "epoch_teacher": epoch_teacher,
+            "epoch_student": epoch_student,
+        })
+    
     print("Training teacher...")
     trainer.train_teacher(epochs=epoch_teacher)
     test_loss, test_acc = trainer.evaluate_teacher(dataloader_test)
@@ -105,6 +134,13 @@ if __name__ == "__main__":
     test_loss, test_acc = trainer.evaluate_student(dataloader_test)
     print(f"Final test loss: {test_loss:.4f}")
     print(f"Final test accuracy: {test_acc:.4f}") 
+
+    # Get final metrics and finish wandb run
+    final_metrics = trainer.get_final_metrics()
+    if final_metrics:
+        print("Final metrics:", final_metrics)
+    
+    trainer.finish() 
 
 
     
