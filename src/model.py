@@ -14,12 +14,11 @@ class MLP(nn.Module):
 
     @nn.compact
     def __call__(self, x):
-        for i in range(self.depth - 1):
-            x = nn.Dense(256)(x)
-            x = nn.relu(x)
-        # Output 10 + auxiliary dimensions
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
         x = nn.Dense(10 + self.auxiliary)(x)
 
-        # Softmax main & auxiliary outputs separately
-        x = jnp.concatenate([nn.softmax(x[:, :10]), nn.softmax(x[:, 10:])], axis=-1)
+        # Return raw logits, not softmax outputs
         return x

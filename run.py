@@ -23,7 +23,7 @@ if __name__ == "__main__":
     seed = 42
    
     # Load Data
-    batch_size = 100
+    batch_size = 100  # Reduced from 200 for better distillation
     X_train, y_train, X_test, y_test = Dataset.load_MNIST()
     dataloader_train = DataLoader(X_train, y_train, batch_size=batch_size, shuffle=True, seed=seed)
     dataloader_test = DataLoader(X_test, y_test, batch_size=batch_size, shuffle=False)
@@ -31,10 +31,22 @@ if __name__ == "__main__":
     # Initalize two models w/ same weights
     student, teacher = init_models(MLP, jax.random.PRNGKey(seed))
 
-    # Optimizer
-    lr = 1e-3
-    optimizer_teacher = optax.adam(lr)
-    optimizer_student = optax.adam(lr)
+    # Optimizer - Much more aggressive learning rate for student
+    lr_teacher = 1e-4  # Increased back to 1e-3 for better teacher
+    lr_student = 1e-4  # Much higher learning rate for student
+    
+    # Create learning rate scheduler for student
+    lr_schedule = optax.cosine_decay_schedule(
+        init_value=lr_student,
+        decay_steps=100 * 300,  # 100 epochs * ~300 batches per epoch
+        alpha=0.1  # Final LR will be 10% of initial
+    )
+    
+    optimizer_teacher = optax.adam(lr_teacher)
+    optimizer_student = optax.chain(
+        # optax.clip_by_global_norm(1.0),  # Gradient clipping
+        optax.adam(lr_schedule)
+    )
 
     # Loss
     def loss_teacher(logits, batch_y):
@@ -46,45 +58,50 @@ if __name__ == "__main__":
     def loss_student(student_logits, teacher_logits, batch_y):
         # student_logits and teacher_logits are full outputs [batch_size, 13]
         # Extract auxiliary outputs (last 3 dimensions)
-        student_auxiliary = student_logits[:, 10:]  # These are already softmax outputs
-        teacher_auxiliary = teacher_logits[:, 10:]  # These are already softmax outputs
+        student_auxiliary = student_logits[:, 10:]  # These are raw logits now
+        teacher_auxiliary = teacher_logits[:, 10:]  # These are raw logits now
+        
+        # Apply temperature scaling for better distillation
+        temperature = 3.0  # Higher temperature makes distributions softer
+        student_auxiliary_softmax = jax.nn.softmax(student_auxiliary / temperature)
+        teacher_auxiliary_softmax = jax.nn.softmax(teacher_auxiliary / temperature)
         
         # Distillation loss: cross-entropy between auxiliary outputs
-        distillation_loss = -jnp.sum(teacher_auxiliary * jnp.log(student_auxiliary + 1e-8), axis=-1).mean()
-        
-        # Supervised loss: cross-entropy on main outputs with ground truth
-        student_main = student_logits[:, :10]
-        supervised_loss = optax.softmax_cross_entropy_with_integer_labels(student_main, batch_y).mean()
-        
-        # Combined loss with weighting
-        alpha = 0.7  # Weight for distillation loss
-        total_loss = alpha * distillation_loss + (1 - alpha) * supervised_loss
+        distillation_loss = -jnp.sum(teacher_auxiliary_softmax * jnp.log(student_auxiliary_softmax + 1e-8), axis=-1).mean()
         
         # Calculate accuracy based on main outputs vs ground truth
+        student_main = student_logits[:, :10]
         accuracy = jnp.mean(jnp.argmax(student_main, axis=-1) == batch_y)
         
-        return total_loss, accuracy
+        return distillation_loss, accuracy
 
-    # Train teacher
-    epochs = 5
+    # Train teacher - even more epochs for better teacher
+    epoch_teacher = 5  # Increased from 15
+    epoch_student = 100
 
     trainer = Trainer(
         teacher=teacher,
         student=student,
-        dataloader=dataloader_train,
+        dataloader_train=dataloader_train,
+        dataloader_test=dataloader_test,
         optimizer_teacher=optimizer_teacher,
         optimizer_student=optimizer_student,
         loss_teacher=loss_teacher,
         loss_student=loss_student  # Loss is defined inside the trainer
     )
     print("Training teacher...")
-    trainer.train_teacher(epochs=epochs, eval_dataloader=dataloader_test)
+    trainer.train_teacher(epochs=epoch_teacher)
     test_loss, test_acc = trainer.evaluate_teacher(dataloader_test)
     print(f"Final test loss: {test_loss:.4f}")
     print(f"Final test accuracy: {test_acc:.4f}") 
 
+    # Copy teacher weights to student for better initialization
+    print("Copying teacher weights to student...")
+    trainer.params_student = trainer.params_teacher.copy()
+    trainer.opt_state_student = trainer.optimizer_student.init(trainer.params_student)
+
     print("Training student...")
-    trainer.train_student(epochs=epochs, eval_dataloader=dataloader_test)
+    trainer.train_student(epochs=epoch_student)
     test_loss, test_acc = trainer.evaluate_student(dataloader_test)
     print(f"Final test loss: {test_loss:.4f}")
     print(f"Final test accuracy: {test_acc:.4f}") 

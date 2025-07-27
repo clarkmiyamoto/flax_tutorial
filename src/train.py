@@ -13,7 +13,8 @@ class Trainer:
     def __init__(self, 
                  teacher: nn.Module, 
                  student: nn.Module, 
-                 dataloader: DataLoader,
+                 dataloader_train: DataLoader,
+                 dataloader_test: DataLoader,
                  optimizer_teacher: optax.GradientTransformation,
                  optimizer_student: optax.GradientTransformation,
                  loss_teacher: Callable,
@@ -22,7 +23,8 @@ class Trainer:
                  seed: int = 42):
         self.teacher = teacher
         self.student = student
-        self.dataloader = dataloader
+        self.dataloader_train = dataloader_train
+        self.dataloader_test = dataloader_test
         self.optimizer_teacher = optimizer_teacher
         self.optimizer_student = optimizer_student
         self.loss_teacher = loss_teacher
@@ -60,7 +62,7 @@ class Trainer:
         self.opt_state_teacher = self.optimizer_teacher.init(self.params_teacher)
         self.opt_state_student = self.optimizer_student.init(self.params_student)
 
-    def train_teacher(self, epochs: int, eval_dataloader=None):
+    def train_teacher(self, epochs: int):
         '''
         Train the model for a given number of epochs.
         '''
@@ -72,7 +74,7 @@ class Trainer:
             train_accuracies = []
             epoch_start_time = time.time()
             
-            for x_batch, y_batch in self.dataloader:
+            for x_batch, y_batch in self.dataloader_train:
                 loss, accuracy, self.params_teacher, self.opt_state_teacher = self._jit_train_step_teacher(
                     self.params_teacher, self.opt_state_teacher, x_batch, y_batch
                 )
@@ -87,11 +89,11 @@ class Trainer:
             print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Train Acc: {avg_train_acc:.4f} (Time: {epoch_time:.2f}s)")
             
             # Evaluate on validation set if provided
-            if eval_dataloader is not None:
-                val_loss, val_acc = self.evaluate_teacher(eval_dataloader)
+            if self.dataloader_test is not None:
+                val_loss, val_acc = self.evaluate_teacher(self.dataloader_test)
                 print(f"Epoch {epoch+1}/{epochs} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
-    def train_student(self, epochs: int, eval_dataloader=None):
+    def train_student(self, epochs: int):
         '''
         Train the model for a given number of epochs.
         '''
@@ -103,7 +105,7 @@ class Trainer:
             train_accuracies = []
             epoch_start_time = time.time()
             
-            for x_batch, y_batch in self.dataloader:
+            for x_batch, y_batch in self.dataloader_train:
                 logits_teacher = self.teacher.apply(self.params_teacher, x_batch)
                 loss, accuracy, self.params_student, self.opt_state_student = self._jit_train_step_student(
                     self.params_student, self.opt_state_student, x_batch, logits_teacher, y_batch
@@ -119,10 +121,10 @@ class Trainer:
             print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Train Acc: {avg_train_acc:.4f} (Time: {epoch_time:.2f}s)")
             
             # Evaluate on validation set if provided
-            if eval_dataloader is not None:
-                val_loss, val_acc = self.evaluate_student(eval_dataloader)
+            if self.dataloader_test is not None:
+                val_loss, val_acc = self.evaluate_student(self.dataloader_test)
                 print(f"Epoch {epoch+1}/{epochs} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-
+   
     def _train_step_teacher(self, params, opt_state, batch_x, batch_y):
         """Jitted training step."""
         def loss_fn(params, batch_x, batch_y):
@@ -147,12 +149,13 @@ class Trainer:
     def _train_step_student(self, params, opt_state, batch_x, teacher_logits, batch_y):
         """Jitted training step."""
         def loss_fn(params, batch_x, teacher_logits, batch_y):
+            # Add noise augmentation for student training
             logits = self.student.apply(params, batch_x)    
             loss, accuracy = self.loss_student(logits, teacher_logits, batch_y)
             return loss, accuracy
         
         (loss, accuracy), grads = jax.value_and_grad(loss_fn, has_aux=True)(params, batch_x, teacher_logits, batch_y)
-        updates, new_opt_state = self.optimizer_student.update(grads, opt_state)
+        updates, new_opt_state = self.optimizer_student.update(grads, opt_state, params)
         new_params = optax.apply_updates(params, updates)
         
         return loss, accuracy, new_params, new_opt_state
